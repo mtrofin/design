@@ -1,5 +1,7 @@
 # Design Rationale
 
+This document collects context and reasoning behind design decisions in
+WebAssembly.
 
 ## Why AST?
 

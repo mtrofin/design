@@ -10,6 +10,9 @@ discussions should continue to be held in the design repository for now so
 that the spec work can remain focused.
 
 **Expect the contents to be in flux: everything is still tentative.**
+The entire WebAssembly design remains under active development, and while many
+aspects of the design are settling down, this is enabling broader prototyping
+and experimentation which may prompt reevaluation of even these aspects.
 
 A good starting point is the [high-level design goals](HighLevelGoals.md),
 followed by the [FAQ](FAQ.md).
