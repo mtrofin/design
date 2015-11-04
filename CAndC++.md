@@ -12,15 +12,26 @@ WebAssembly has a pretty conventional ISA: 8-bit bytes, two's complement
 integers, little-endian, and a lot of other normal properties. Reasonably
 portable C/C++ code should port to WebAssembly without difficultly.
 
-In [the MVP](MVP.md), WebAssembly will have an ILP32 data model, meaning
-that `int`, `long`, and pointer types are all 32-bit. The `long long`
-type is 64-bit.
+WebAssembly has 32-bit and 64-bit architecture variants, called wasm32 and
+wasm64. wasm32 has an ILP32 data model, meaning that `int`, `long`, and
+pointer types are all 32-bit, while the `long long` type is 64-bit. wasm64
+has an LP64 data model, meaning that `long` and pointer types will be
+64-bit, while `int` is 32-bit.
 
-In the future, WebAssembly will be extended to support
-[64-bit address spaces](FutureFeatures.md#linear-memory-bigger-than-4gib). This
-will enable an LP64 data model as well, meaning that `long` and pointer
-types will be 64-bit, while `int` is 32-bit. From a C/C++ perspective,
-this will be a separate mode from ILP32, with a separate ABI.
+[The MVP](MVP.md) will support only wasm32; support for wasm64 will be
+added in the future to support
+[64-bit address spaces](FutureFeatures.md#linear-memory-bigger-than-4-gib).
+
+`float` and `double` are the IEEE 754-2008 single- and double-precision types,
+which are native in WebAssembly. `long double` is the IEEE 754-2008
+quad-precision type, which is a software-emulated type. WebAssembly does
+not have a builtin quad-precision type. Quad-precision is not part of
+the WebAssembly platform itself. There are no quad-precision operators
+built into WebAssembly. The long double type here is software-emulated
+in library code linked into WebAssembly applications that need it.
+
+For performance and compatibility with other platforms, `float` and
+`double` are recommended for most uses.
 
 ### Language Support
 
@@ -63,7 +74,7 @@ libraries. Developers will need to ensure that all code linked into an
 application are compiled with the same compiler and options.
 
 In the future, when WebAssembly is extended to support
-[dynamic linking](FutureFeatures.md#dynamic-linking), stable ABIs are
+[dynamic linking](DynamicLinking.md), stable ABIs are
 expected to be defined in accompaniment.
 
 ### Undefined and Implementation-defined Behavior
@@ -105,8 +116,8 @@ Most implementation-defined behavior in C and C++ is dependent on the compiler
 rather than on the underlying platform. For those details that are dependent
 on the platform, on WebAssembly they follow naturally from having 8-bit bytes,
 32-bit and 64-bit two's complement integers, and
-[32-bit and 64-bit IEEE-754-style floating point support]
-(AstSemantics.md#floating-point-operations).
+[32-bit and 64-bit IEEE-754-2008-style floating point support]
+(AstSemantics.md#floating-point-operators).
 
 ## Portability of compiled code
 

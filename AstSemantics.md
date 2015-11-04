@@ -1,220 +1,223 @@
 # Abstract Syntax Tree Semantics
 
-WebAssembly code is represented as an abstract syntax tree
-that has a basic division between statements and
-expressions. Each function body consists of exactly one statement.
-All expressions and operations are typed, with no implicit conversions or
-overloading rules.
+WebAssembly code is represented as an Abstract Syntax Tree (AST) that has a
+basic division between statements and expressions. Each function body consists
+of exactly one statement. All expressions and operators are typed, with no
+implicit conversions or overloading rules.
 
 Verification of WebAssembly code requires only a single pass with constant-time
 type checking and well-formedness checking.
 
-Why not a stack-, register- or SSA-based bytecode?
-* Trees allow a smaller binary encoding: [JSZap][], [Slim Binaries][].
-* [Polyfill prototype][] shows simple and efficient translation to asm.js.
-
-  [JSZap]: https://research.microsoft.com/en-us/projects/jszap/
-  [Slim Binaries]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.108.1711
-  [Polyfill prototype]: https://github.com/WebAssembly/polyfill-prototype-1
-
-WebAssembly offers a set of operations that are language-independent but closely
-match operations in many programming languages and are efficiently implementable
+WebAssembly offers a set of operators that are language-independent but closely
+match operators in many programming languages and are efficiently implementable
 on all modern computers.
 
-Some operations may *trap* under some conditions, as noted below. In the MVP,
-trapping means that execution in the WebAssembly module is terminated and
-abnormal termination is reported to the outside environment. In a JS
-environment such as a browser, a trap results in throwing a JS exception.
+The [rationale](Rationale.md) document details why WebAssembly is designed as
+detailed in this document.
+
+## Order of evaluation
+
+The evaluation order of child nodes is deterministic.
+
+All nodes other than control flow constructs need to evaluate their child nodes
+in the order they appear in the serialized AST.
+
+For example, the s-expression presentation of the `i32.add` node
+`(i32.add (set_local $x (i32.const 1)) (set_local $x (i32.const 2)))`
+would first evaluate the child node  `(set_local $x (i32.const 1))` and
+afterwards the child node `(set_local $x (i32.const 2))`.
+
+The value of the local variable $x will be `2` after the `i32.add` node is fully
+evaluated.
+
+## Traps
+
+Some operators may *trap* under some conditions, as noted below. In the MVP,
+trapping means that execution in the WebAssembly instance is terminated and
+abnormal termination is reported to the outside environment. In a JavaScript
+environment such as a browser, a trap results in throwing a JavaScript exception.
 If developer tools are active, attaching a debugger before the
 termination would be sensible.
 
-Callstack space is limited by unspecified and dynamically varying constraints.
-If program callstack usage exceeds the available callstack space at any time,
-a trap occurs.
+Callstack space is limited by unspecified and dynamically varying constraints
+and is a source of [nondeterminism](Nondeterminism.md). If program callstack usage
+exceeds the available callstack space at any time, a trap occurs.
+
+Implementations must have an internal maximum call stack size, and every call
+must take up some resources toward exhausting that size (of course, dynamic
+resources may be exhausted much earlier). This rule exists to avoid differences
+in observable behavior; if some implementations have this property and others
+don't, the same program which runs successfully on some implementations may
+consume unbounded resources and fail on others. Also, in the future, it is
+expected that WebAssembly will add some form of stack-introspection
+functionality, in which case such optimizations would be directly observable.
+
+Support for explicit tail calls is planned in
+[the future](FutureFeatures.md#general-purpose-proper-tail-calls),
+which would add an explicit tail-call operator with well-defined effects
+on stack introspection.
 
 ## Types
 
-### Local Types
+WebAssembly has the following *value types*:
 
-The following types are called the *local types*:
+  * `i32`: 32-bit integer
+  * `i64`: 64-bit integer
+  * `f32`: 32-bit floating point
+  * `f64`: 64-bit floating point
 
-  * `int32`: 32-bit integer
-  * `int64`: 64-bit integer
-  * `float32`: 32-bit floating point
-  * `float64`: 64-bit floating point
-
-Note that the local types `int32` and `int64` are not inherently signed or
+Note that the value types `i32` and `i64` are not inherently signed or
 unsigned. The interpretation of these types is determined by individual
-operations.
+operators.
 
-Parameters and local variables use local types.
+Parameters and local variables have value types.
 
-### Expression Types
-
-*Expression types* include all the local types, and also:
-
-  * `void`: no value
-
-AST expression nodes use expression types.
-
-### Memory Types
-
-*Memory types* are a different superset of the local types, adding the
-following:
-
-  * `int8`: 8-bit integer
-  * `int16`: 16-bit integer
-
-Global variables and linear memory accesses use memory types.
+Also note that there is no need for a `void` type; function signatures use
+[sequences of types](AstSemantics.md#calls) to describe their return values, so
+a `void` return type is represented as an empty sequence.
 
 ## Linear Memory
 
-The main storage of a wasm module, called the *linear memory*, is a contiguous,
-byte-addressable range of memory spanning from offset `0` and extending for
-`memory_size` bytes. The linear memory can be considered to be a untyped array
-of bytes. The linear memory is sandboxed; it does not alias the execution
-engine's internal data structures, the execution stack, local variables, global
-variables, or other process memory.
+The main storage of a WebAssembly instance, called the *linear memory*, is a
+contiguous, byte-addressable range of memory spanning from offset `0` and
+extending for `memory_size` bytes which can be dynamically grown by
+[`grow_memory`](AstSemantics.md#resizing). The linear memory can be considered to
+be an untyped array of bytes, and it is unspecified how embedders map this array
+into their process' own [virtual memory][]. The linear memory is sandboxed; it
+does not alias the execution engine's internal data structures, the execution
+stack, local variables, or other process memory. The initial state of linear
+memory is specified by the [module](Modules.md#linear-memory-section).
+
+  [virtual memory]: https://en.wikipedia.org/wiki/Virtual_memory
 
 In the MVP, linear memory is not shared between threads of execution. Separate
-modules can execute in separate threads but have their own linear memory and can
+instances can execute in separate threads but have their own linear memory and can
 only communicate through messaging, e.g. in browsers using `postMessage`. It
 will be possible to share linear memory between threads of execution when
 [threads](PostMVP.md#threads) are added.
 
-### Linear Memory Operations
+### Linear Memory Accesses
 
-Linear memory operations are annotated with a memory type and perform a
-conversion between that memory type and a local type.
+Linear memory access is accomplished with explicit `load` and `store` operators.
+Integer loads can specify a *storage size* which is smaller than the result type as
+well as a signedness which determines whether the bytes are sign- or zero-
+extended into the result type.
 
-Loads read data from linear memory, convert from their memory type to a basic
-type, and return the result:
+  * `i32.load8_s`: load 1 byte and sign-extend i8 to i32
+  * `i32.load8_u`: load 1 byte and zero-extend i8 to i32
+  * `i32.load16_s`: load 2 bytes and sign-extend i16 to i32
+  * `i32.load16_u`: load 2 bytes and zero-extend i16 to i32
+  * `i32.load`: load 4 bytes as i32
+  * `i64.load8_s`: load 1 byte and sign-extend i8 to i64
+  * `i64.load8_u`: load 1 byte and zero-extend i8 to i64
+  * `i64.load16_s`: load 2 bytes and sign-extend i16 to i64
+  * `i64.load16_u`: load 2 bytes and zero-extend i16 to i64
+  * `i64.load32_s`: load 4 bytes and sign-extend i32 to i64
+  * `i64.load32_u`: load 4 bytes and zero-extend i32 to i64
+  * `i64.load`: load 8 bytes as i64
+  * `f32.load`: load 4 bytes as f32
+  * `f64.load`: load 8 bytes as f64
 
-  * `int32.load_sx[int8]`: sign-extend to int32
-  * `int32.load_sx[int16]`: sign-extend to int32
-  * `int32.load_zx[int8]`: zero-extend to int32
-  * `int32.load_zx[int16]`: zero-extend to int32
-  * `int32.load[int32]`: (no conversion)
-  * `int64.load_sx[int8]`: sign-extend to int64
-  * `int64.load_sx[int16]`: sign-extend to int64
-  * `int64.load_sx[int32]`: sign-extend to int64
-  * `int64.load_zx[int8]`: zero-extend to int64
-  * `int64.load_zx[int16]`: zero-extend to int64
-  * `int64.load_zx[int32]`: zero-extend to int64
-  * `int64.load[int64]`: (no conversion)
-  * `float32.load[float32]`: (no conversion)
-  * `float64.load[float64]`: (no conversion)
+Stores have an additional input operand which is the `value` to store to memory.
+Like loads, integer stores may specify a smaller *storage size* than the operand
+size in which case integer wrapping is implied.
 
-Stores have an operand providing a value to store. They convert from the value's
-local type to their memory type, and write the resulting value to linear memory:
+  * `i32.store8`: wrap i32 to i8 and store 1 byte
+  * `i32.store16`: wrap i32 to i16 and store 2 bytes
+  * `i32.store`: (no conversion) store 4 bytes
+  * `i64.store8`: wrap i64 to i8 and store 1 byte
+  * `i64.store16`: wrap i64 to i16 and store 2 bytes
+  * `i64.store32`: wrap i64 to i32 and store 4 bytes
+  * `i64.store`: (no conversion) store 8 bytes
+  * `f32.store`: (no conversion) store 4 bytes
+  * `f64.store`: (no conversion) store 8 bytes
 
-  * `int32.store[int8]`: wrap int32 to int8
-  * `int32.store[int16]`: wrap int32 to int16
-  * `int32.store[int32]`: (no conversion)
-  * `int64.store[int8]`: wrap int64 to int8
-  * `int64.store[int16]`: wrap int64 to int16
-  * `int64.store[int32]`: wrap int64 to int32
-  * `int64.store[int64]`: (no conversion)
-  * `float32.store[float32]`: (no conversion)
-  * `float64.store[float64]`: (no conversion)
-
-Wrapping of integers simply discards any upper bits; i.e. wrapping does not
-perform saturation, trap on overflow, etc.
-
-In addition to storing a value to linear memory, store instructions also
-reproduce their value operand, with no conversion applied.
+In addition to storing to memory, store instructions produce a value which is their 
+`value` input operand before wrapping.
 
 ### Addressing
 
-Each linear memory access operation also has an address operand and an immediate
-integer byte offset attribute. The infinite-precision sum of the address
-operand's value with the byte offset attribute's value is called the
-*effective address*, which is interpreted as an unsigned byte index.
+Each linear memory access operator has an address operand and an unsigned 
+integer byte offset immediate. The immediate is the same type as the address'
+index. The infinite-precision unsigned sum of the address operand's value with 
+the immediate offset's value is called the *effective address*, which is 
+interpreted as an unsigned byte index.
 
-Linear memory accesses access the bytes starting at the location in the linear
-memory storage indexed by the effective address, and extending for the number
-of bytes implied by the memory type attribute of the access.
-
-If any of the accessed bytes are beyond `memory_size`, the access is considered
-*out-of-bounds*. A module may optionally define that out-of-bounds includes
-small effective addresses close to `0`
-(see [discussion](https://github.com/WebAssembly/design/issues/204)).
-The semantics of out-of-bounds accesses are discussed
-[below](AstSemantics.md#out-of-bounds).
+Linear memory operators access the bytes starting at the effective address and
+extend for the number of bytes implied by the storage size. If any of the
+accessed bytes are beyond `memory_size`, the access is considered
+*out-of-bounds*.
 
 The use of infinite-precision in the effective address computation means that
-the addition of the offset to the address does is never wrapped, so if the
+the addition of the offset to the address never causes wrapping, so if the
 address for an access is out-of-bounds, the effective address will always also
-be out-of-bounds. This is intended to simplify folding of offsets into complex
-address modes in hardware, and to simplify bounds checking optimizations.
+be out-of-bounds.
 
-In the MVP, address operands and offset attributes have type `int32`, and linear
+In wasm32, address operands and offset attributes have type `i32`, and linear
 memory sizes are limited to 4 GiB (of course, actual sizes are further limited
-by [available resources](Nondeterminism.md)). In the future, to support
-[>4GiB linear memory](FutureFeatures.md#heaps-bigger-than-4gib), support for
-indices with type `int64` will be added.
+by [available resources](Nondeterminism.md)). In wasm64, address operands and
+offsets have type `i64`. The MVP only includes wasm32; subsequent versions
+will add support for wasm64 and thus
+[>4 GiB linear memory](FutureFeatures.md#linear-memory-bigger-than-4-gib).
 
 ### Alignment
 
-Each linear memory access operation also has an immediate positive integer power
-of 2 alignment attribute. An alignment value which is the same as the memory
-attribute size is considered to be a *natural* alignment.
+Each linear memory access operator also has an immediate positive integer power
+of 2 alignment attribute, which is the same type as the address' index. An
+alignment value which is the same as the memory attribute size is considered
+to be a *natural* alignment. The alignment applies to the effective address and
+not merely the address operand, i.e. the immediate offset is taken into account
+when considering alignment.
 
 If the effective address of a memory access is a multiple of the alignment
 attribute value of the memory access, the memory access is considered *aligned*,
 otherwise it is considered *misaligned*. Aligned and misaligned accesses have
-the same behavior. Alignment affects performance as follows:
+the same behavior. 
+
+Alignment affects performance as follows:
 
  * Aligned accesses with at least natural alignment are fast.
  * Aligned accesses with less than natural alignment may be somewhat slower
-   (think: implementation makes multiple accesses, either in software or
-    in hardware).
- * Misaligned access of any kind may be *massively* slower
-   (think: implementation takes a signal and fixes things up)
+   (think: implementation makes multiple accesses, either in software or in
+   hardware).
+ * Misaligned access of any kind may be *massively* slower (think:
+   implementation takes a signal and fixes things up).
 
-Thus, it is recommend that WebAssembly producers align frequently-used data
-to permit the use of natural alignment access, and use loads and stores with
-the grestest alignment values practical, while always avoiding misaligned
-accesses.
+Thus, it is recommend that WebAssembly producers align frequently-used data to
+permit the use of natural alignment access, and use loads and stores with the
+greatest alignment values practical, while always avoiding misaligned accesses.
 
-Either tooling or an explicit opt-in "debug mode" in the spec should allow
-execution of a module in a mode that threw exceptions on misaligned access.
-(This mode would incur some runtime cost for branching on most platforms which
-is why it isn't the specified default.)
+### Out of Bounds
 
-### Out of bounds
+Out of bounds accesses trap.
 
-The ideal semantics is for out-of-bounds accesses to trap, but the implications
-are not yet fully clear.
+### Resizing
 
-There are several possible variations on this design being discussed and
-experimented with. More measurement is required to understand the associated
-tradeoffs.
+In the MVP, linear memory can be resized by a `grow_memory` operator. This
+operator requires its operand to be a multiple of the WebAssembly page size,
+which is 64KiB on all engines (though large page support may be added in 
+the [future](FutureFeatures.md#large-page-support).
 
-  * After an out-of-bounds access, the module can no longer execute code and any
-    outstanding JS ArrayBuffers aliasing the linear memory are detached.
-    * This would primarily allow hoisting bounds checks above effectful
-      operations.
-    * This can be viewed as a mild security measure under the assumption that
-      while the sandbox is still ensuring safety, the module's internal state
-      is incoherent and further execution could lead to Bad Things (e.g., XSS
-      attacks).
-  * To allow for potentially more-efficient memory sandboxing, the semantics could
-    allow for a nondeterministic choice between one of the following when an
-    out-of-bounds access occurred.
-    * The ideal trap semantics.
-    * Loads return an unspecified value.
-    * Stores are either ignored or store to an unspecified location in the linear memory.
-    * Either tooling or an explicit opt-in "debug mode" in the spec should allow
-      execution of a module in a mode that threw exceptions on out-of-bounds
-      access.
+ * `grow_memory` : grow linear memory by a given unsigned delta which
+    must be a multiple of the page size.
+
+As stated [above](AstSemantics.md#linear-memory), linear memory is contiguous,
+meaning there are no "holes" in the linear address space. After the
+MVP, there are [future features](FutureFeatures.md#finer-grained-control-over-memory)
+proposed to allow setting protection and creating mappings within the
+contiguous linear memory.
+
+In the MVP, memory can only be grown. After the MVP, a memory shrinking
+operator may be added. However, due to normal fragmentation, applications are
+instead expected release unused physical pages from the working set using the
+[`discard`](FutureFeatures.md#finer-grained-control-over-memory) future feature.
 
 ## Local variables
 
 Each function has a fixed, pre-declared number of local variables which occupy a single
 index space local to the function. Parameters are addressed as local variables. Local
-variables do not have addresses and are not aliased in the globals or memory. Local
-variables have local types and are initialized to the appropriate zero value for their
+variables do not have addresses and are not aliased by linear memory. Local
+variables have value types and are initialized to the appropriate zero value for their
 type at the beginning of the function, except parameters which are initialized to the values
 of the arguments passed to the function.
 
@@ -222,84 +225,102 @@ of the arguments passed to the function.
   * `set_local`: set the current value of a local variable
 
 The details of index space for local variables and their types will be further clarified,
-e.g. whether locals with type `int32` and `int64` must be contiguous and separate from
+e.g. whether locals with type `i32` and `i64` must be contiguous and separate from
 others, etc.
-
-## Global variables
-
-Global variables are storage locations outside the linear memory.
-Every global has exactly one memory type.
-Accesses to global variables specify the index as an integer literal.
-
-  * `load_global`: load the value of a given global variable
-  * `store_global`: store a given value to a given global variable
-
-The specification will add atomicity annotations in the future. Currently
-all global accesses can be considered "non-atomic".
 
 ## Control flow structures
 
-WebAssembly offers basic structured control flow. All control flow structures
-are statements.
+WebAssembly offers basic structured control flow with the following constructs.
+All control flow structures, except `case`, are statements.
 
-  * `block`: a fixed-length sequence of statements
-  * `if`: if statement
-  * `do_while`: do while statement, basically a loop with a conditional branch
-    (back to the top of the loop)
-  * `forever`: infinite loop statement (like `while (1)`), basically an
-    unconditional branch (back to the top of the loop)
-  * `continue`: continue to start of nested loop
-  * `break`: break to end from nested loop or block
-  * `return`: return zero or more values from this function
-  * `switch`: switch statement with fallthrough
+ * `block`: a fixed-length sequence of statements with a label at the end
+ * `loop`: a fixed-length sequence of statements with a label at the end
+           and a loop header label at the top (note: this does not loop by
+           itself, so one would often combine this with a br_if at the end
+           to form a branch back to the top)
+ * `if`: if statement with then body
+ * `if_else`: if statement with then and else bodies
+ * `br`: branch to a given label in an enclosing construct (see below)
+ * `br_if`: conditionally branch to a given label in an enclosing construct
+ * `tableswitch`: a jump table which may jump either to enclosed `case` blocks
+                  or to labels in enclosing constructs (see below for a more
+                  detailed description)
+ * `case`: must be an immediate child of `tableswitch`; has a label declared
+           in the `tableswitch`'s table and a body (as above, see below)
+ * `return`: return zero or more values from this function
 
-Break and continue statements can only target blocks or loops in which they are
-nested. This guarantees that all resulting control flow graphs are well-structured.
+References to labels must occur within an *enclosing construct* that defined
+the label. This means that references to an AST node's label can only happen
+within descendents of the node in the tree. For example, references to a
+`block`'s label can only occur within the `block`'s body. In practice,
+one can arrange `block`s to put labels wherever one wants to jump to, except
+for one restriction: one can't jump into the middle of a loop from outside
+it. This restriction ensures the well-structured property discussed below.
 
-  * Simple and size-efficient binary encoding and compilation.
-  * Any control flow—even irreducible—can be transformed into structured control
-    flow with the
-    [Relooper](https://github.com/kripken/emscripten/raw/master/docs/paper.pdf)
-    [algorithm](http://dl.acm.org/citation.cfm?id=2048224&CFID=670868333&CFTOKEN=46181900),
-    with guaranteed low code size overhead, and typically minimal throughput
-    overhead (except for pathological cases of irreducible control
-    flow). Alternative approaches can generate reducible control flow via node
-    splitting, which can reduce throughput overhead, at the cost of increasing
-    code size (potentially very significantly in pathological cases).
-  * The
-    [signature-restricted proper tail-call](PostMVP.md#signature-restricted-proper-tail-calls)
-    feature would allow efficient compilation of arbitrary irreducible control
-    flow.
+`tableswitch` instructions have a zero-based array of labels, a "default"
+label, an index operand, and a list of `case` nodes. A `tableswitch`
+selects which label to branch to by looking up the index value in the label
+array, and transferring control to that label. If the index is out of bounds,
+it transfers control to the "default" label.
+
+`case` nodes can only appear as immediate children of `tableswitch` statements.
+They have a label, which must be declared in the immediately enclosing
+`tableswitch`'s array, and a body which can contain arbitrary code. Control
+falls through the end of a `case` block into the following `case` block, or
+the end of the `tableswitch` in the case of the last `case`.
+
 
 ## Calls
 
-Direct calls to a function specify the callee by index into a function table.
+Each function has a *signature*, which consists of:
 
-  * `call_direct`: call function directly
+  * Return types, which are a sequence of value types
+  * Argument types, which are a sequence of value types
 
-Each function has a signature in terms of expression types, and calls must match
-the function signature
-exactly. [Imported functions](MVP.md#code-loading-and-imports) also have
-signatures and are added to the same function table and are thus also callable
-via `call_direct`.
+WebAssembly doesn't support variable-length argument lists (aka
+varargs). Compilers targeting WebAssembly can instead support them through
+explicit accesses to linear memory.
 
-Indirect calls may be made to a value of function-pointer type. A function-
-pointer value may be obtained for a given function as specified by its index
-in the function table.
+In the MVP, the length of the return types sequence may only be 0 or 1. This
+restriction may be lifted in the future.
+
+Direct calls to a function specify the callee by index into a *main function table*.
+
+  * `call`: call function directly
+
+A direct call to a function with a mismatched signature is a module verification error.
+
+Like direct calls, calls to [imports](Modules.md#imports-and-exports) specify
+the callee by index into an *imported function table* defined by the sequence of import
+declarations in the module import section. A direct call to an imported function with a
+mismatched signature is a module verification error.
+
+  * `call_import` : call imported function directly
+
+Indirect calls allow calling target functions that are unknown at compile time.
+The target function is an expression of value type `i32` and is always the first
+input into the indirect call.
+
+A `call_indirect` specifies the *expected* signature of the target function with
+an index into a *signature table* defined by the module. An indirect call to a
+function with a mismatched signature causes a trap.
 
   * `call_indirect`: call function indirectly
-  * `addressof`: obtain a function pointer value for a given function
 
-Function-pointer values are comparable for equality and the `addressof` operator
-is monomorphic. Function-pointer values can be explicitly coerced to and from
-integers (which, in particular, is necessary when loading/storing to memory
-since memory only provides integer types). For security and safety reasons,
-the integer value of a coerced function-pointer value is an abstract index and
-does not reveal the actual machine code address of the target function.
+Functions from the main function table are made addressable by defining an
+*indirect function table* that consists of a sequence of indices into the
+module's main function table. A function from the main table may appear more
+than once in the indirect function table. Functions not appearing in the
+indirect function table cannot be called indirectly.
 
-In the MVP, function pointer values are local to a single module. The
-[dynamic linking](FutureFeatures.md#dynamic-linking) feature is necessary for
-two modules to pass function pointers back and forth.
+In the MVP, indices into the indirect function table are local to a single
+module, so wasm modules may use `i32` constants to refer to entries in their own
+indirect function table. The [dynamic linking](DynamicLinking.md) feature is
+necessary for two modules to pass function pointers back and forth. This will
+mean concatenating indirect function tables and adding an operator `address_of`
+that computes the absolute index into the concatenated table from an index in a
+module's local indirect table. JITing may also mean appending more functions to
+the end of the indirect function table.
 
 Multiple return value calls will be possible, though possibly not in the
 MVP. The details of multiple-return-value calls needs clarification. Calling a
@@ -307,191 +328,215 @@ function that returns multiple values will likely have to be a statement that
 specifies multiple local variables to which to assign the corresponding return
 values.
 
-## Literals
+## Constants
 
-Each local type allows literal values directly in the AST. See the
-[binary encoding section](BinaryEncoding.md#constant-pool).
+These operators have an immediate operand of their associated type which is
+produced as their result value. All possible values of all types are
+supported (including NaN values of all possible bit patterns).
 
-## Expressions with control flow
+  * `i32.const`: produce the value of an i32 immediate
+  * `i64.const`: produce the value of an i64 immediate
+  * `f32.const`: produce the value of an f32 immediate
+  * `f64.const`: produce the value of an f64 immediate
 
-Expression trees offer significant size reduction by avoiding the need for
-`set_local`/`get_local` pairs in the common case of an expression with only one,
-immediate use. The following primitives provide AST nodes that express control
-flow and thus allow more opportunities to build bigger expression trees and
-further reduce `set_local`/`get_local` usage (which constitute 30-40% of total
-bytes in the
-[polyfill prototype](https://github.com/WebAssembly/polyfill-prototype-1)).
-Additionally, these primitives are useful building blocks for
-WebAssembly-generators (including the JavaScript polyfill prototype).
+## Expressions with Control Flow
 
   * `comma`: evaluate and ignore the result of the first operand, evaluate and
     return the second operand
   * `conditional`: basically ternary `?:` operator
 
-New operations may be considered which allow measurably greater
+New operators may be considered which allow measurably greater
 expression-tree-building opportunities.
 
-## 32-bit Integer operations
+## 32-bit Integer operators
 
-Most operations available on 32-bit integers are sign-independent. Signed
-integers are always represented as two's complement and arithmetic that
-overflows conforms to the standard wrap-around semantics. All comparison
-operations yield 32-bit integer results with `1` representing `true` and `0`
-representing `false`.
+Integer operators are signed, unsigned, or sign-agnostic. Signed operators
+use two's complement signed integer representation.
 
-  * `int32.add`: signed-less addition
-  * `int32.sub`: signed-less subtraction
-  * `int32.mul`: signed-less multiplication (lower 32-bits)
-  * `int32.sdiv`: signed division
-  * `int32.udiv`: unsigned division
-  * `int32.srem`: signed remainder
-  * `int32.urem`: unsigned remainder
-  * `int32.and`: signed-less logical and
-  * `int32.ior`: signed-less inclusive or
-  * `int32.xor`: signed-less exclusive or
-  * `int32.shl`: signed-less shift left
-  * `int32.shr`: signed-less logical shift right
-  * `int32.sar`: signed-less arithmetic shift right
-  * `int32.eq`: signed-less compare equal
-  * `int32.slt`: signed less than
-  * `int32.sle`: signed less than or equal
-  * `int32.ult`: unsigned less than
-  * `int32.ule`: unsigned less than or equal
-  * `int32.sgt`: signed greater than
-  * `int32.sge`: signed greater than or equal
-  * `int32.ugt`: unsigned greater than
-  * `int32.uge`: unsigned greater than or equal
-  * `int32.clz`: count leading zeroes (defined for all values, including zero)
-  * `int32.ctz`: count trailing zeroes (defined for all values, including zero)
-  * `int32.popcnt`: count number of ones
+Signed and unsigned operators trap whenever the result cannot be represented
+in the result type. This includes division and remainder by zero, and signed
+division overflow (`INT32_MIN / -1`). Signed remainder with a non-zero
+denominator always returns the correct value, even when the corresponding
+division would trap. Sign-agnostic operators silently wrap overflowing
+results into the result type.
 
-Explicitly signed and unsigned operations trap whenever the result cannot be
-represented in the result type. This includes division and remainder by zero,
-and signed division overflow (`INT32_MIN / -1`). Signed remainder with a
-non-zero denominator always returns the correct value, even when the
-corresponding division would trap. Signed-less operations never trap.
+  * `i32.add`: sign-agnostic addition
+  * `i32.sub`: sign-agnostic subtraction
+  * `i32.mul`: sign-agnostic multiplication (lower 32-bits)
+  * `i32.div_s`: signed division (result is truncated toward zero)
+  * `i32.div_u`: unsigned division (result is [floored](https://en.wikipedia.org/wiki/Floor_and_ceiling_functions))
+  * `i32.rem_s`: signed remainder (result has the sign of the dividend)
+  * `i32.rem_u`: unsigned remainder
+  * `i32.and`: sign-agnostic logical and
+  * `i32.or`: sign-agnostic inclusive or
+  * `i32.xor`: sign-agnostic exclusive or
+  * `i32.shl`: sign-agnostic shift left
+  * `i32.shr_u`: zero-replicating (logical) shift right
+  * `i32.shr_s`: sign-replicating (arithmetic) shift right
+  * `i32.eq`: sign-agnostic compare equal
+  * `i32.ne`: sign-agnostic compare unequal
+  * `i32.lt_s`: signed less than
+  * `i32.le_s`: signed less than or equal
+  * `i32.lt_u`: unsigned less than
+  * `i32.le_u`: unsigned less than or equal
+  * `i32.gt_s`: signed greater than
+  * `i32.ge_s`: signed greater than or equal
+  * `i32.gt_u`: unsigned greater than
+  * `i32.ge_u`: unsigned greater than or equal
+  * `i32.clz`: sign-agnostic count leading zero bits (All zero bits are considered leading if the value is zero)
+  * `i32.ctz`: sign-agnostic count trailing zero bits (All zero bits are considered trailing if the value is zero)
+  * `i32.popcnt`: sign-agnostic count number of one bits
 
 Shifts interpret their shift count operand as an unsigned value. When the shift
-count is at least the bitwidth of the shift, `shl` and `shr` produce `0`, and
-`sar` produces `0` if the value being shifted is non-negative, and `-1`
+count is at least the bitwidth of the shift, `shl` and `shr_u` produce `0`, and
+`shr_s` produces `0` if the value being shifted is non-negative, and `-1`
 otherwise.
 
-## 64-bit integer operations
+All comparison operators yield 32-bit integer results with `1` representing
+`true` and `0` representing `false`.
 
-The same operations are available on 64-bit integers as the those available for
+## 64-bit integer operators
+
+The same operators are available on 64-bit integers as the those available for
 32-bit integers.
 
-## Floating point operations
+## Floating point operators
 
-Floating point arithmetic follows the IEEE-754 standard, except that:
+Floating point arithmetic follows the IEEE 754-2008 standard, except that:
  - The sign bit and significand bit pattern of any NaN value returned from a
-   floating point arithmetic operation other than `neg`, `abs`, and `copysign`
+   floating point arithmetic operator other than `neg`, `abs`, and `copysign`
    are not specified. In particular, the "NaN propagation"
-   section of IEEE-754 is not required. NaNs do propagate through arithmetic
-   operations according to IEEE-754 rules, the difference here is that they do
-   so without necessarily preserving the specific bit patterns of the original
-   NaNs.
+   section of IEEE 754-2008 is not required. NaNs do propagate through
+   arithmetic operators according to IEEE 754-2008 rules, the difference here
+   is that they do so without necessarily preserving the specific bit patterns
+   of the original NaNs.
  - WebAssembly uses "non-stop" mode, and floating point exceptions are not
    otherwise observable. In particular, neither alternate floating point
-   exception handling attributes nor the non-computational operations on status
+   exception handling attributes nor the non-computational operators on status
    flags are supported. There is no observable difference between quiet and
    signalling NaN. However, positive infinity, negative infinity, and NaN are
    still always produced as result values to indicate overflow, invalid, and
-   divide-by-zero conditions, as specified by IEEE-754.
+   divide-by-zero conditions, as specified by IEEE 754-2008.
  - WebAssembly uses the round-to-nearest ties-to-even rounding attribute, except
    where otherwise specified. Non-default directed rounding attributes are not
    supported.
 
 In the future, these limitations may be lifted, enabling
-[full IEEE-754 support](FutureFeatures.md#full-ieee-754-conformance).
+[full IEEE 754-2008 support](FutureFeatures.md#full-ieee-754-2008-conformance).
 
-Note that not all operations required by IEEE-754 are provided directly.
+Note that not all operators required by IEEE 754-2008 are provided directly.
 However, WebAssembly includes enough functionality to support reasonable library
-implementations of the remaining required operations.
+implementations of the remaining required operators.
 
-  * `float32.add`: addition
-  * `float32.sub`: subtraction
-  * `float32.mul`: multiplication
-  * `float32.div`: division
-  * `float32.abs`: absolute value
-  * `float32.neg`: negation
-  * `float32.copysign`: copysign
-  * `float32.ceil`: ceiling operation
-  * `float32.floor`: floor operation
-  * `float32.trunc`: round to nearest integer towards zero
-  * `float32.nearestint`: round to nearest integer, ties to even
-  * `float32.eq`: compare equal
-  * `float32.lt`: less than
-  * `float32.le`: less than or equal
-  * `float32.gt`: greater than
-  * `float32.ge`: greater than or equal
-  * `float32.sqrt`: square root
-  * `float32.min`: minimum (binary operator); if either operand is NaN, returns NaN
-  * `float32.max`: maximum (binary operator); if either operand is NaN, returns NaN
+  * `f32.add`: addition
+  * `f32.sub`: subtraction
+  * `f32.mul`: multiplication
+  * `f32.div`: division
+  * `f32.abs`: absolute value
+  * `f32.neg`: negation
+  * `f32.copysign`: copysign
+  * `f32.ceil`: ceiling operator
+  * `f32.floor`: floor operator
+  * `f32.trunc`: round to nearest integer towards zero
+  * `f32.nearest`: round to nearest integer, ties to even
+  * `f32.eq`: compare ordered and equal
+  * `f32.ne`: compare unordered or unequal
+  * `f32.lt`: compare ordered and less than
+  * `f32.le`: compare ordered and less than or equal
+  * `f32.gt`: compare ordered and greater than
+  * `f32.ge`: compare ordered and greater than or equal
+  * `f32.sqrt`: square root
+  * `f32.min`: minimum (binary operator); if either operand is NaN, returns NaN
+  * `f32.max`: maximum (binary operator); if either operand is NaN, returns NaN
 
-  * `float64.add`: addition
-  * `float64.sub`: subtraction
-  * `float64.mul`: multiplication
-  * `float64.div`: division
-  * `float64.abs`: absolute value
-  * `float64.neg`: negation
-  * `float64.copysign`: copysign
-  * `float64.ceil`: ceiling operation
-  * `float64.floor`: floor operation
-  * `float64.trunc`: round to nearest integer towards zero
-  * `float64.nearestint`: round to nearest integer, ties to even
-  * `float64.eq`: compare equal
-  * `float64.lt`: less than
-  * `float64.le`: less than or equal
-  * `float64.gt`: greater than
-  * `float64.ge`: greater than or equal
-  * `float64.sqrt`: square root
-  * `float64.min`: minimum (binary operator); if either operand is NaN, returns NaN
-  * `float64.max`: maximum (binary operator); if either operand is NaN, returns NaN
+64-bit floating point operators:
 
-`min` and `max` operations treat `-0.0` as being effectively less than `0.0`.
+  * `f64.add`: addition
+  * `f64.sub`: subtraction
+  * `f64.mul`: multiplication
+  * `f64.div`: division
+  * `f64.abs`: absolute value
+  * `f64.neg`: negation
+  * `f64.copysign`: copysign
+  * `f64.ceil`: ceiling operator
+  * `f64.floor`: floor operator
+  * `f64.trunc`: round to nearest integer towards zero
+  * `f64.nearest`: round to nearest integer, ties to even
+  * `f64.eq`: compare ordered and equal
+  * `f64.ne`: compare unordered or unequal
+  * `f64.lt`: compare ordered and less than
+  * `f64.le`: compare ordered and less than or equal
+  * `f64.gt`: compare ordered and greater than
+  * `f64.ge`: compare ordered and greater than or equal
+  * `f64.sqrt`: square root
+  * `f64.min`: minimum (binary operator); if either operand is NaN, returns NaN
+  * `f64.max`: maximum (binary operator); if either operand is NaN, returns NaN
+
+`min` and `max` operators treat `-0.0` as being effectively less than `0.0`.
+
+In floating point comparisons, the operands are *unordered* if either operand
+is NaN, and *ordered* otherwise.
 
 ## Datatype conversions, truncations, reinterpretations, promotions, and demotions
 
-  * `int32.wrap[int64]`: wrap a 64-bit integer to a 32-bit integer
-  * `int32.trunc_signed[float32]`: truncate a 32-bit float to a signed 32-bit integer
-  * `int32.trunc_signed[float64]`: truncate a 64-bit float to a signed 32-bit integer
-  * `int32.trunc_unsigned[float32]`: truncate a 32-bit float to an unsigned 32-bit integer
-  * `int32.trunc_unsigned[float64]`: truncate a 64-bit float to an unsigned 32-bit integer
-  * `int32.reinterpret[float32]`: reinterpret the bits of a 32-bit float as a 32-bit integer
-  * `int64.extend_signed[int32]`: extend a signed 32-bit integer to a 64-bit integer
-  * `int64.extend_unsigned[int32]`: extend an unsigned 32-bit integer to a 64-bit integer
-  * `int64.trunc_signed[float32]`: truncate a 32-bit float to a signed 64-bit integer
-  * `int64.trunc_signed[float64]`: truncate a 64-bit float to a signed 64-bit integer
-  * `int64.trunc_unsigned[float32]`: truncate a 32-bit float to an unsigned 64-bit integer
-  * `int64.trunc_unsigned[float64]`: truncate a 64-bit float to an unsigned 64-bit integer
-  * `int64.reinterpret[float64]`: reinterpret the bits of a 64-bit float as a 64-bit integer
-  * `float32.demote[float64]`: demote a 64-bit float to a 32-bit float
-  * `float32.cvt_signed[int32]`: convert a signed 32-bit integer to a 32-bit float
-  * `float32.cvt_signed[int64]`: convert a signed 64-bit integer to a 32-bit float
-  * `float32.cvt_unsigned[int32]`: convert an unsigned 32-bit integer to a 32-bit float
-  * `float32.cvt_unsigned[int64]`: convert an unsigned 64-bit integer to a 32-bit float
-  * `float32.reinterpret[int32]`: reinterpret the bits of a 32-bit integer as a 32-bit float
-  * `float64.promote[float32]`: promote a 32-bit float to a 64-bit float
-  * `float64.cvt_signed[int32]`: convert a signed 32-bit integer to a 64-bit float
-  * `float64.cvt_signed[int64]`: convert a signed 64-bit integer to a 64-bit float
-  * `float64.cvt_unsigned[int32]`: convert an unsigned 32-bit integer to a 64-bit float
-  * `float64.cvt_unsigned[int64]`: convert an unsigned 64-bit integer to a 64-bit float
-  * `float64.reinterpret[int64]`: reinterpret the bits of a 64-bit integer as a 64-bit float
+  * `i32.wrap/i64`: wrap a 64-bit integer to a 32-bit integer
+  * `i32.trunc_s/f32`: truncate a 32-bit float to a signed 32-bit integer
+  * `i32.trunc_s/f64`: truncate a 64-bit float to a signed 32-bit integer
+  * `i32.trunc_u/f32`: truncate a 32-bit float to an unsigned 32-bit integer
+  * `i32.trunc_u/f64`: truncate a 64-bit float to an unsigned 32-bit integer
+  * `i32.reinterpret/f32`: reinterpret the bits of a 32-bit float as a 32-bit integer
+  * `i64.extend_s/i32`: extend a signed 32-bit integer to a 64-bit integer
+  * `i64.extend_u/i32`: extend an unsigned 32-bit integer to a 64-bit integer
+  * `i64.trunc_s/f32`: truncate a 32-bit float to a signed 64-bit integer
+  * `i64.trunc_s/f64`: truncate a 64-bit float to a signed 64-bit integer
+  * `i64.trunc_u/f32`: truncate a 32-bit float to an unsigned 64-bit integer
+  * `i64.trunc_u/f64`: truncate a 64-bit float to an unsigned 64-bit integer
+  * `i64.reinterpret/f64`: reinterpret the bits of a 64-bit float as a 64-bit integer
+  * `f32.demote/f64`: demote a 64-bit float to a 32-bit float
+  * `f32.convert_s/i32`: convert a signed 32-bit integer to a 32-bit float
+  * `f32.convert_s/i64`: convert a signed 64-bit integer to a 32-bit float
+  * `f32.convert_u/i32`: convert an unsigned 32-bit integer to a 32-bit float
+  * `f32.convert_u/i64`: convert an unsigned 64-bit integer to a 32-bit float
+  * `f32.reinterpret/i32`: reinterpret the bits of a 32-bit integer as a 32-bit float
+  * `f64.promote/f32`: promote a 32-bit float to a 64-bit float
+  * `f64.convert_s/i32`: convert a signed 32-bit integer to a 64-bit float
+  * `f64.convert_s/i64`: convert a signed 64-bit integer to a 64-bit float
+  * `f64.convert_u/i32`: convert an unsigned 32-bit integer to a 64-bit float
+  * `f64.convert_u/i64`: convert an unsigned 64-bit integer to a 64-bit float
+  * `f64.reinterpret/i64`: reinterpret the bits of a 64-bit integer as a 64-bit float
 
 Wrapping and extension of integer values always succeed.
 Promotion and demotion of floating point values always succeed.
 Demotion of floating point values uses round-to-nearest ties-to-even rounding,
-and may overflow to infinity or negative infinity as specified by IEEE-754.
+and may overflow to infinity or negative infinity as specified by IEEE 754-2008.
 If the operand of promotion or demotion is NaN, the sign bit and significand
-of the result are computed from an unspecified function of the implementation,
-the opcode, and the operand.
+of the result are not specified.
 
 Reinterpretations always succeed.
 
 Conversions from integer to floating point always succeed, and use
 round-to-nearest ties-to-even rounding.
 
-Truncation from floating point to integer where IEEE-754 would specify an
-invalid operation exception (e.g. when the floating point value is NaN or
+Truncation from floating point to integer where IEEE 754-2008 would specify an
+invalid operator exception (e.g. when the floating point value is NaN or
 outside the range which rounds to an integer in range) traps.
+
+## Type-parameterized operators.
+
+  * `select`: a ternary operator with a boolean (i32) condition and two
+    additional operands, which must have the same type as each other. `select`
+    returns the the first of these two operands if the condition operand is
+    non-zero, or the second otherwise.
+
+## Feature test
+
+To support [feature testing](FeatureTest.md), an AST node would be provided:
+
+  * `has_feature`: return whether the given feature is supported, identified by string
+
+In the MVP, `has_feature` would always return false. As features were added post-MVP,
+`has_feature` would start returning true. `has_feature` is a pure function, always
+returning the same value for the same string over the lifetime of a single
+instance and other related (as defined by the host environment) instances.
+See also [feature testing](FeatureTest.md) and
+[better feature testing](FutureFeatures.md#better-feature-testing-support).

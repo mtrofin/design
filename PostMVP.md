@@ -13,20 +13,19 @@ Post-MVP features will be available under [feature tests](FeatureTest.md).
 Provide low-level buildings blocks for pthreads-style shared memory: shared
 memory between threads, atomics and futexes (or [synchronic][]).
 
-New atomic memory operations, including loads/stores annotated with their atomic
+New atomic memory operators, including loads/stores annotated with their atomic
 ordering property, will follow the [C++11 memory model][], similarly to the
 [PNaCl atomic support][] and the [SharedArrayBuffer][] proposal. Regular loads
-and stores will be bound by a happens-before relationship to atomic operations
+and stores will be bound by a happens-before relationship to atomic operators
 in the same thread of execution, which themselves synchronize-with atomics in
-other threads. Following these rules, regular load/store operations can still be
+other threads. Following these rules, regular load/store operators can still be
 elided, duplicated, and split up. This guarantees that data-race free code
 executes as if it were sequentially consistent. Even when there are data races,
 WebAssembly will ensure that the [nondeterminism](Nondeterminism.md) remains
 limited and local.
 
-Modules can have global variables that are either shared or thread-local. While
-the linear memory could be used to store shared global variables, global
-variables are not aliasable and thus allow more aggressive optimization.
+Modules can have thread-local variables that are disjoint from linear memory
+and can thus be represented efficiently by the engine.
 
   [synchronic]: http://wg21.link/n4195
   [C++11 memory model]: http://www.hboehm.info/c++mm/
@@ -38,10 +37,9 @@ variables are not aliasable and thus allow more aggressive optimization.
 Support fixed-width SIMD vectors, initially only for 128-bit wide vectors as
 demonstrated in [PNaCl's SIMD][] and [SIMD.js][].
 
-SIMD adds new primitive variable and expression types (e.g., `float32x4`) so it
-has to be part of the core semantics. SIMD operations (e.g., `float32x4.add`)
-could be either builtin operations (no different from `int32.add`) or exports of
-a builtin SIMD module.
+SIMD adds new local types (e.g., `f32x4`) so it has to be part of the core
+semantics. SIMD operators (e.g., `f32x4.add`) could be either builtin
+operators (no different from `i32.add`) or exports of a builtin SIMD module.
 
   [PNaCl's SIMD]: https://developer.chrome.com/native-client/reference/pnacl-c-cpp-language-support#portable-simd-vectors
   [SIMD.js]: https://github.com/tc39/ecmascript_simd

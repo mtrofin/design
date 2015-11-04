@@ -13,37 +13,49 @@ This is covered in the [tooling](Tooling.md) section.
 
 ## Dynamic linking
 
-[Dynamic loading](MVP.md#code-loading-and-imports) is in [the MVP](MVP.md), but
-all loaded modules have their own [separate linear memory](MVP.md#linear-memory) and cannot share
-[function pointers](MVP.md#function-pointers). Dynamic linking will allow
-developers to share memory and function pointers between WebAssembly modules.
-
-WebAssembly will support both load-time and run-time (`dlopen`) dynamic linking
-of both WebAssembly modules and non-WebAssembly modules (e.g., on the Web, ES6
-ones containing JavaScript).
-
-Dynamic linking is especially useful when combined with a Content Distribution
-Network (CDN) such as [hosted libraries][] because the library is only ever
-downloaded and compiled once per user device. It can also allow for smaller
-differential updates, which could be implemented in collaboration with
-[service workers][].
-
-Standardize a single [ABI][] per source language, allowing for WebAssembly
-modules to interface with each other regardless of compiler. While it is highly
-recommended for compilers targeting WebAssembly to adhere to the specified ABI
-for interoperability, WebAssembly runtimes will be ABI agnostic, so it will be
-possible to use a non-standard ABI for specialized purposes.
-
-  [hosted libraries]: https://developers.google.com/speed/libraries/
-  [service workers]: https://www.w3.org/TR/service-workers/
-  [ABI]: https://en.wikipedia.org/wiki/Application_binary_interface
+This is covered in the [dynamic linking](DynamicLinking.md) section.
 
 ## Finer-grained control over memory
 
-* `mmap` of files.
-* `madvise(MADV_DONTNEED)`.
-* Shared memory, where a physical address range is mapped to multiple physical
-  pages in a single WebAssembly module as well as across modules.
+Provide access to safe OS-provided functionality including:
+* `map_file(addr, length, Blob, file-offset)`: semantically, this operator
+   copies the specified range from `Blob` into the range `[addr, addr+length)`
+   (where `addr+length <= memory_size`) but implementations are encouraged
+   to `mmap(addr, length, MAP_FIXED | MAP_PRIVATE, fd)`
+* `discard(addr, length)`: semantically, this operator zeroes the given range
+   but the implementation is encouraged to drop the zeroed physical pages from
+   the process's working set (e.g., by calling `madvise(MADV_DONTNEED)` on
+   POSIX)
+* `shmem_create(length)`: create a memory object that can be simultaneously
+  shared between multiple linear memories
+* `map_shmem(addr, length, shmem, shmem-offset)`: like `map_file` except
+  `MAP_SHARED`, which isn't otherwise valid on read-only Blobs
+* `mprotect(addr, length, prot-flags)`: change protection on the range
+  `[addr, addr+length)` (where `addr+length <= memory_size`)
+* `decommit(addr, length)`: equivalent to `mprotect(addr, length, PROT_NONE)`
+  followed by `discard(addr, length)` and potentially more efficient than
+  performing these operators in sequence.
+
+The `addr` and `length` parameters above would be required to be multiples of
+[`page_size`](AstSemantics.md#resizing).
+
+The `mprotect` operator would require hardware memory protection to execute
+efficiently and thus may be added as an "optional" feature (requiring a
+[feature test](FeatureTest.md) to use). To support efficient execution even when
+no hardware memory protection is available, a restricted form of `mprotect`
+could be added which is declared statically and only protects low memory
+(providing the expected fault-on-low-memory behavior of native C/C++ apps).
+
+The above list of functionality mostly covers the set of functionality
+provided by the `mmap` OS primitive. One significant exception is that `mmap`
+can allocate noncontiguous virtual address ranges. See the
+[FAQ](FAQ.md#what-about-mmap) for rationale.
+
+## Large page support
+
+Some platforms offer support for memory pages as large as 16GiB, which 
+can improve  the efficiency of memory management in some situations. WebAssembly
+may offer programs the option to specify a larger page size than the [default] (AstSemantics.md#resizing).
 
 ## More expressive control flow
 
@@ -66,26 +78,28 @@ Options under consideration:
 
 ## GC/DOM Integration
 
-* Access to certain kinds of Garbage-Collected (GC) objects from variables,
-  arguments, expressions.
-* Ability to GC-allocate certain kinds of GC objects.
-* Initially, things with fixed structure:
-  * JavaScript strings;
-  * JavaScript functions (as callable closures);
-  * Typed Arrays;
-  * [Typed objects](https://github.com/nikomatsakis/typed-objects-explainer/);
-  * DOM objects via WebIDL.
-* Perhaps a rooting API for safe reference from the linear address space.
+See [GC.md](GC.md).
 
-## Linear memory bigger than 4GiB
+## Linear memory bigger than 4 GiB
 
-WebAssembly will eventually allow a module to have a linear memory size greater than 4GiB by providing
-load/store operations that take 64-bit index operands. Modules which opt-in to
-this feature have `int64` as the canonical pointer type.
+The WebAssembly MVP will support the wasm32 mode of WebAssembly, with linear
+memory sizes up to 4 GiB using 32-bit linear memory indices. To support larger
+sizes, the wasm64 mode of WebAssembly will be added in the future, supporting
+much greater linear memory sizes using 64-bit linear memory indices. wasm32
+and wasm64 are both just modes of WebAssembly, to be selected by a flag in
+a module header, and don't imply any semantics differences outside of how
+linear memory is handled. Platforms will also have APIs for querying which of
+wasm32 and wasm64 are supported.
 
-On a 32-bit system, memory must still be smaller than 4GiB. A WebAssembly
-implementation running on such a platform may restrict allocations to the lower
-4GiB, and leave the two 32-bits untouched.
+Of course, the ability to actually allocate this much memory will always be
+subject to dynamic resource availability.
+
+It is likely that wasm64 will initially support only 64-bit linear memory
+indices, and wasm32 will leave 64-bit linear memory indices unsupported, so
+that implementations don't have to support multiple index sizes in the same
+instance. However, operators with 32-bit indices and operators with 64-bit
+indices will be given separate names to leave open the possibility of
+supporting both in the same instance in the future.
 
 ## Source maps integration
 
@@ -125,6 +139,13 @@ Useful properties of signature-restricted PTCs:
 
   [asm.js RFC]: http://discourse.specifiction.org/t/request-for-comments-add-a-restricted-subset-of-proper-tail-calls-to-asm-js
  
+## General-purpose Proper Tail Calls
+
+General-purpose Proper Tail Calls would have no signature restrictions, and
+therefore be more broadly usable than
+[Signature-restricted Proper Tail Calls](AstSemantics.md#signature-restricted-proper-tail-calls),
+though there would be some different performance characteristics.
+
 ## Asynchronous Signals
 
 TODO
@@ -132,7 +153,7 @@ TODO
 ## "Long SIMD"
 
 The initial SIMD API will be a "short SIMD" API, centered around fixed-width
-128-bit types and explicit SIMD operations. This is quite portable and useful,
+128-bit types and explicit SIMD operators. This is quite portable and useful,
 but it won't be able to deliver the full performance capabilities of some of
 today's popular hardware. There is [a proposal in the SIMD.js repository][] for
 a "long SIMD" model which generalizes to wider hardware vector lengths, making
@@ -155,7 +176,7 @@ include:
 
   [a proposal in the SIMD.js repository]: https://github.com/tc39/ecmascript_simd/issues/180
 
-## Platform-independent Just-in-Time compilation
+## Platform-independent Just-in-Time (JIT) compilation
 
 WebAssembly is a new virtual ISA, and as such applications won't be able to
 simply reuse their existing JIT-compiler backends. Applications will instead
@@ -173,11 +194,16 @@ should support:
     * Code patching for polymorphic inline caching;
 	* Call patching to chain JIT-compiled functions together;
 	* Temporary halt-insertion within functions, to trap if a function start
-      executing while a JIT-compiler's runtime is performing operations
+      executing while a JIT-compiler's runtime is performing operators
       dangerous to that function.
 * Provide JITs access to profile feedback for their JIT-compiled code.
 * Code unloading capabilities, especially in the context of code garbage
   collection and defragmentation.
+
+WebAssembly's JIT interface would likely be fairly low-level. However, there
+are use cases for higher-level functionality and optimization too. One avenue
+for addressing these use cases is a
+[JIT and Optimization library](JITLibrary.md).
 
 ## Multiprocess support
 
@@ -202,7 +228,7 @@ use cases:
   division by zero and so on. It's possible for compilers to add explicit checks
   and handle such cases manually, though more direct support from the platform
   could have advantages:
-  * Non-trapping versions of some opcodes, such as an integer division
+  * Non-trapping versions of some operators, such as an integer division
     instruction that returns zero instead of trapping on division by zero, could
     potentially run faster on some platforms.
   * The ability to recover gracefully from traps in some way could make many
@@ -210,56 +236,62 @@ use cases:
     resuming execution at the trapping instruction with the execution state
     altered, if there can be a reasonable way to specify how that should work.
 
-## Additional integer operations
+## Additional integer operators
 
-* The following operations can be built from other operators already present,
+* The following operators can be built from other operators already present,
   however in doing so they read at least one non-constant input multiple times,
   breaking single-use expression tree formation.
-  * `int32.rotr`: bitwise rotate right
-  * `int32.rotl`: bitwise rotate left
-  * `int32.smin`: signed minimum
-  * `int32.smax`: signed maximum
-  * `int32.umin`: unsigned minimum
-  * `int32.umax`: unsigned maximum
-  * `int32.sext`: `sext(x, y)` is `x<<y>>y`
-  * `int32.abs`: absolute value (is `abs(INT32_MIN)` `INT32_MIN` or should it trap?)
-  * `int32.bswap`: reverse bytes (endian conversion)
-  * `int32.bswap16`: `bswap16(x)` is `((x>>8)&255)|((x&255)<<8)`
+  * `i32.rotr`: sign-agnostic bitwise rotate right
+  * `i32.rotl`: sign-agnostic bitwise rotate left
+  * `i32.min_s`: signed minimum
+  * `i32.max_s`: signed maximum
+  * `i32.min_u`: unsigned minimum
+  * `i32.max_u`: unsigned maximum
+  * `i32.sext`: sign-agnostic `sext(x, y)` is `shr_s(shl(x,y),y)`
+  * `i32.abs_s`: signed absolute value (traps on `INT32_MIN`)
+  * `i32.bswap`: sign-agnostic reverse bytes (endian conversion)
+  * `i32.bswap16`: sign-agnostic, `bswap16(x)` is `((x>>8)&255)|((x&255)<<8)`
 
-* The following operations are just potentially interesting.
-  * `int32.clrs`: count leading redundant sign bits (defined for all values, including 0)
+* The following operators are just potentially interesting.
+  * `i32.clrs`: sign-agnostic count leading redundant sign bits (defined for
+    all values, including 0)
+  * `i32.floor_div_s`: signed division (result is [floored](https://en.wikipedia.org/wiki/Floor_and_ceiling_functions))
 
-## Additional floating point operations
+* The following 64-bit-only operators are potentially interesting as well.
+  * `i64.mor`: sign-agnostic [8x8 bit-matrix multiply with or](http://mmix.cs.hm.edu/doc/instructions-en.html#MOR)
+  * `i64.mxor`: sign-agnostic [8x8 bit-matrix multiply with xor](http://mmix.cs.hm.edu/doc/instructions-en.html#MXOR)
 
-  * `float32.minnum`: minimum; if exactly one operand is NaN, returns the other operand
-  * `float32.maxnum`: maximum; if exactly one operand is NaN, returns the other operand
-  * `float32.fma`: fused multiply-add (results always conforming to IEEE-754)
-  * `float64.minnum`: minimum; if exactly one operand is NaN, returns the other operand
-  * `float64.maxnum`: maximum; if exactly one operand is NaN, returns the other operand
-  * `float64.fma`: fused multiply-add (results always conforming to IEEE-754)
+## Additional floating point operators
 
-`minnum` and `maxnum` operations would treat `-0.0` as being effectively less
+  * `f32.minnum`: minimum; if exactly one operand is NaN, returns the other operand
+  * `f32.maxnum`: maximum; if exactly one operand is NaN, returns the other operand
+  * `f32.fma`: fused multiply-add (results always conforming to IEEE 754-2008)
+  * `f64.minnum`: minimum; if exactly one operand is NaN, returns the other operand
+  * `f64.maxnum`: maximum; if exactly one operand is NaN, returns the other operand
+  * `f64.fma`: fused multiply-add (results always conforming to IEEE 754-2008)
+
+`minnum` and `maxnum` operators would treat `-0.0` as being effectively less
 than `0.0`.
 
-Note that some operations, like `fma`, may not be available or may not perform
+Note that some operators, like `fma`, may not be available or may not perform
 well on all platforms. These should be guarded by
 [feature tests](FeatureTest.md) so that if available, they behave consistently.
 
-## Floating point approximation operations
+## Floating point approximation operators
 
-  * `float32.reciprocal_approximation`: reciprocal approximation
-  * `float64.reciprocal_approximation`: reciprocal approximation
-  * `float32.reciprocal_sqrt_approximation`: reciprocal sqrt approximation
-  * `float64.reciprocal_sqrt_approximation`: reciprocal sqrt approximation
+  * `f32.reciprocal_approximation`: reciprocal approximation
+  * `f64.reciprocal_approximation`: reciprocal approximation
+  * `f32.reciprocal_sqrt_approximation`: reciprocal sqrt approximation
+  * `f64.reciprocal_sqrt_approximation`: reciprocal sqrt approximation
 
-These operations would not required to be fully precise, but the specifics
+These operators would not required to be fully precise, but the specifics
 would need clarification.
 
 ## 16-bit and 128-bit floating point support
 
 For 16-bit floating point support, it may make sense to split the feature
 into two parts: support for just converting between 16-bit and 32-bit or
-64-bit formats possibly folded into load and store operations, and full
+64-bit formats possibly folded into load and store operators, and full
 support for actual 16-bit arithmetic.
 
 128-bit is an interesting question because hardware support for it is very
@@ -268,59 +300,26 @@ so there's nothing preventing WebAssembly applications from linking to an
 appropriate emulation library and getting similarly performant results.
 Emulation libraries would have more flexibility to offer approximation
 techniques such as double-double arithmetic. If we standardize 128-bit
-floating point in WebAssembly, it will probably be standard IEEE-754
+floating point in WebAssembly, it will probably be standard IEEE 754-2008
 quadruple precision.
 
-## Floating point library intrinsics
+## Full IEEE 754-2008 conformance
 
-These operations aren't needed because they can be implemented in WebAssembly
-code and linked into WebAssembly modules as at small size cost, and this avoids
-a non-trivial specification burden of their semantics/precision. Adding these
-intrinsics would allow for better high-level backend optimization of these
-intrinsics that require builtin knowledge of their semantics. On the other
-hand, a code generator may continue to statically link in its own
-implementation since this provides greater control over precision/performance
-tradeoffs.
+WebAssembly floating point conforms IEEE 754-2008 in most respects, but there
+are a few areas that are
+[not yet covered](AstSemantics.md#floating-point-operators).
 
-  * `float64.sin`: trigonometric sine
-  * `float64.cos`: trigonometric cosine
-  * `float64.tan`: trigonometric tangent
-  * `float64.asin`: trigonometric arcsine
-  * `float64.acos`: trigonometric arccosine
-  * `float64.atan`: trigonometric  arctangent
-  * `float64.atan2`: trigonometric arctangent with two arguments
-  * `float64.exp`: exponentiate e
-  * `float64.ln`: natural logarithm
-  * `float64.pow`: exponentiate
-  * `float32.sin`: trigonometric sine
-  * `float32.cos`: trigonometric cosine
-  * `float32.tan`: trigonometric tangent
-  * `float32.asin`: trigonometric arcsine
-  * `float32.acos`: trigonometric arccosine
-  * `float32.atan`: trigonometric  arctangent
-  * `float32.atan2`: trigonometric arctangent with two arguments
-  * `float32.exp`: exponentiate e
-  * `float32.ln`: natural logarithm
-  * `float32.pow`: exponentiate
-
-The rounding behavior of these operations would need clarification.
-
-## Full IEEE-754 conformance
-
-WebAssembly floating point conforms IEEE-754 in most respects, but there are a
-few areas that are [not yet covered](AstSemantics.md#floating-point-operations).
-
-IEEE-754 NaN bit pattern propagation is presently permitted but not required.
-It would be possible for WebAssembly to require it in the future.
+IEEE 754-2008 NaN bit pattern propagation is presently permitted but not
+required. It would be possible for WebAssembly to require it in the future.
 
 To support exceptions and alternate rounding modes, one option is to define an
 alternate form for each of `add`, `sub`, `mul`, `div`, `sqrt`, and `fma`. These
 alternate forms would have extra operands for rounding mode, masked traps, and
-old flags, and an extra result for a new flags value. These operations would be
+old flags, and an extra result for a new flags value. These operators would be
 fairly verbose, but it's expected that their use cases will specialized. This
 approach has the advantage of exposing no global (even if only per-thread)
 control and status registers to applications, and to avoid giving the common
-operations the possibility of having side effects.
+operators the possibility of having side effects.
 
 Debugging techniques are also important, but they don't necessarily need to be
 in the spec itself. Implementations are welcome (and encouraged) to support
@@ -351,7 +350,7 @@ There are two different use cases here, one where the application wishes to
 handle overflow locally, and one where it doesn't.
 
 When the application is prepared to handle overflow locally, it would be useful
-to have arithmetic operations which can indicate when overflow occured. An
+to have arithmetic operators which can indicate when overflow occurred. An
 example of this is the checked arithmetic builtins available in compilers such
 as
 [clang](http://clang.llvm.org/docs/LanguageExtensions.html#checked-arithmetic-builtins)
@@ -362,15 +361,41 @@ be used instead of passing a pointer.
 
 There are also several use cases where an application does not wish to handle
 overflow locally. One family of examples includes implementing optimized bignum
-arithmetic, or optimizing JS Numbers to use int32 operations. Another family
+arithmetic, or optimizing JavaScript Numbers to use int32 operators. Another family
 includes compiling code that doesn't expect overflow to occur, but which wishes
 to have overflow detected and reported if it does happen. These use cases would
 ideally like to have overflow trap, and to allow them to
 [handle trap specially][]. Following the rule that explicitly signed and
-unsigned operations trap whenever the result value can not be represented in the
+unsigned operators trap whenever the result value can not be represented in the
 result type, it would be possible to add explicitly signed and unsigned versions
 of integer `add`, `sub`, and `mul`, which would trap on overflow. The main
 reason we haven't added these already is that they're not efficient for
 general-purpose use on several of today's popular hardware architectures.
 
   [handle trap specially]: FutureFeatures.md#trapping-or-non-trapping-strategies
+
+## Better feature testing support
+
+The [MVP feature testing situation](FeatureTest.md) could be improved by
+allowing unknown/unsupported AST operators to decode and validate. The runtime
+semantics of these unknown operators could either be to trap or call a
+same-signature module-defined polyfill function. This feature could provide a
+lighter-weight alternative to load-time polyfilling (approach 2 in
+[FeatureTest.md](FeatureTest.md)), especially if the [specific layer](BinaryEncoding.md)
+were to be standardized and performed natively such that no user-space translation 
+pass was otherwise necessary.
+
+## Mutable global variables
+
+In the MVP, there are no global variables; C/C++ global variables are stored in
+linear memory and thus accessed through normal
+[linear memory operators](AstSemantics.md#linear-memory-operators).
+[Dynamic linking](DynamicLinking.md) will add some form of immutable global
+variable analogous to "symbols" in native binaries. In some cases, though,
+it may be useful to have a fully mutable global variable which lives outside
+linear memory. This would allow more aggressive compiler optimizations (due to
+better alias information). If globals are additionally allowed array types,
+significant portions of memory could be moved out of linear memory which could
+reduce fragmentation issues. Languages like Fortran which limit aliasing would be
+one use case. C/C++ compilers could also determine that some global variables never
+have their address taken.

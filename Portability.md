@@ -26,24 +26,27 @@ characteristics:
 * Support unaligned memory accesses or reliable trapping that allows software
   emulation thereof.
 * Two's complement signed integers in 32 bits and optionally 64 bits.
-* IEEE-754 32-bit and 64-bit floating point, except for
-  [a few exceptions](AstSemantics.md#floating-point-operations).
+* IEEE 754-2008 32-bit and 64-bit floating point, except for
+  [a few exceptions](AstSemantics.md#floating-point-operators).
 * Little-endian byte ordering.
 * Memory regions which can be efficiently addressed with 32-bit
   pointers or indices.
-* Linear memory bigger than 4GiB with 64-bit addressing
-  [may be added later](FutureFeatures.md#linear-memory-bigger-than-4gib), though it will
-  be done under a [feature test](FeatureTest.md) so it won't be required for all
-  WebAssembly implementations.
+* wasm64 additionally supports linear memory bigger than
+  [4 GiB with 64-bit pointers or indices](FutureFeatures.md#linear-memory-bigger-than-4-gib).
 * Enforce secure isolation between WebAssembly modules and other modules or
   processes executing on the same machine.
 * An execution environment which offers forward progress guarantees to all
   threads of execution (even when executing in a non-parallel manner).
+* Availability of lock-free atomic memory operators, when naturally aligned, for
+  8- 16- and 32-bit accesses. At a minimum this must include an atomic
+  compare-and-exchange operator (or equivalent load-linked/store-conditional).
+* wasm64 additionally requires lock-free atomic memory operators, when naturally
+  aligned, for 64-bit accesses.
 
 ## API
 
 WebAssembly does not specify any APIs or syscalls, only an 
-[import mechanism](MVP.md#modules) where the set of available imports is defined
+[import mechanism](Modules.md) where the set of available imports is defined
 by the host environment. In a [Web](Web.md) environment, functionality is
 accessed through the Web APIs defined by the
 [Web Platform](https://en.wikipedia.org/wiki/Open_Web_Platform).
@@ -56,4 +59,4 @@ Portability at the C/C++ level can be achieved by programming to
 a standard API (e.g., POSIX) and relying on the compiler and/or libraries to map
 the standard interface to the host environment's available imports either at
 compile-time (via `#ifdef`) or run-time (via [feature detection](FeatureTest.md)
-and dynamic [loading](MVP.md#modules)/[linking](FutureFeatures.md#dynamic-linking)).
+and dynamic [loading](Modules.md)/[linking](DynamicLinking.md)).

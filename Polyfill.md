@@ -56,11 +56,10 @@ Some divergences that we've identified as potentially desirable:
   general; that information also guarantees that the polyfill is both correct
   and fast.
 * **[Out of bounds heap access](AstSemantics.md#out-of-bounds)**: Regardless of
-  semantics chosen for out of bounds access in WebAssembly, an asm.js polyfill
-  will follow standard asm.js behavior:
+  WebAssembly behavior, an asm.js polyfill will follow standard asm.js behavior:
   - Out of bound stores are ignored (treated as no-op);
   - Out of bound loads return zero for integer loads or NaN for floating point.
-* **[32-bit integer operations](AstSemantics.md#32-bit-integer-operations)**:
+* **[32-bit integer operators](AstSemantics.md#32-bit-integer-operators)**:
   Regardless of WebAssembly behavior, an asm.js polyfill will follow its
   standard behavior:
   - Division by zero returns zero;
@@ -77,7 +76,7 @@ Some divergences that we've identified as potentially desirable:
 The MVP feature set is expected to be entirely polyfillable effectively and
 efficiently. As WebAssembly evolves past MVP the working group will strive to:
 
-* Standardize features which can be pollyfilled;
+* Standardize features which can be polyfilled;
 * Co-evolve with other web standards bodies, ensuring that upcoming WebAssembly
   features remain polyfillable.
 
