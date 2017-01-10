@@ -324,7 +324,7 @@ For each [`import`](https://github.com/WebAssembly/spec/blob/master/interpreter/
 1. If `i` is a memory import:
   1. If `v` is not a [`WebAssembly.Memory` object](#webassemblymemory-objects),
       throw a `WebAssembly.LinkError`.
-  1. Append `v` to `memories`.
+  1. Append `v` to `memories`. NOTE: For MVP, we only support at most one memory import. A `WebAssembly.CompileError` would have been thrown at validation if more than one were present.
   1. Append `v.[[Memory]]` to `imports`.
 1. Otherwise (`i` is a table import):
   1. If `v` is not a [`WebAssembly.Table` object](#webassemblytable-objects),
